@@ -63,7 +63,7 @@ cd <your-repo-name>
 flutter pub get
 ```
 
-### 5. Run the app
+### 3. Run the app
 
 ```bash
 flutter run
