@@ -4,6 +4,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'login.dart';
 import 'add_expenses.dart';
 import 'expense_model.dart';
+import 'dart:async';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -21,12 +22,12 @@ class _HomePageState extends State<HomePage> {
 
   // A fixed color per category so the chart stays consistent
   final Map<String, Color> _categoryColors = {
-    'Food': const Color(0xFFFF8A65),          // warm coral
-    'Transport': const Color(0xFF4FC3F7),     // sky blue
-    'Shopping': const Color(0xFFBA68C8),      // soft purple
-    'Bills': const Color(0xFFE57373),         // muted red
-    'Entertainment': const Color(0xFF4DB6AC), // teal
-    'Other': const Color(0xFFB0BEC5),         // blue-grey
+    'Food': const Color(0xFFD38CB4),          // warm coral
+    'Transport': const Color(0xFFA4DAE3),     // sky blue
+    'Shopping': const Color(0xFFA78FBD),      // soft purple
+    'Bills': const Color(0xFFB2DAB4),         // muted red
+    'Entertainment': const Color(0xD7E6DD9E), // teal
+    'Other': const Color(0xFFDEDBD2),         // blue-grey
   };
 
   // Add this helper inside _HomePageState
@@ -123,6 +124,83 @@ class _HomePageState extends State<HomePage> {
         return Icons.movie;
       default:
         return Icons.category;
+    }
+  }
+
+  // Tracks expenses that are "soft deleted" — removed from the UI but not
+  // yet deleted from Supabase, in case the user hits Undo.
+  final Map<String, Timer> _pendingDeleteTimers = {};
+  final Map<String, MapEntry<int, Expense>> _pendingDeletes = {};
+
+  @override
+  void dispose() {
+    for (final timer in _pendingDeleteTimers.values) {
+      timer.cancel();
+    }
+    super.dispose();
+  }
+
+  void _deleteExpense(Expense expense) {
+    final index = _expenses.indexOf(expense);
+    if (index == -1) return;
+
+    // Remove it from the UI immediately — feels instant
+    setState(() {
+      _expenses.removeAt(index);
+    });
+
+    // Remember its original position, in case of Undo
+    _pendingDeletes[expense.id] = MapEntry(index, expense);
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('"${expense.title}" deleted'),
+          duration: const Duration(seconds: 4),
+          action: SnackBarAction(
+            label: 'UNDO',
+            onPressed: () => _undoDelete(expense.id),
+          ),
+        ),
+      );
+
+    // Only actually delete from Supabase once the undo window has passed
+    _pendingDeleteTimers[expense.id] = Timer(const Duration(seconds: 4), () {
+      _finalizeDelete(expense.id);
+    });
+  }
+
+  void _undoDelete(String id) {
+    _pendingDeleteTimers.remove(id)?.cancel();
+
+    final pending = _pendingDeletes.remove(id);
+    if (pending == null || !mounted) return;
+
+    setState(() {
+      final insertAt = pending.key.clamp(0, _expenses.length);
+      _expenses.insert(insertAt, pending.value);
+    });
+  }
+
+  Future<void> _finalizeDelete(String id) async {
+    _pendingDeleteTimers.remove(id);
+    final pending = _pendingDeletes.remove(id);
+    if (pending == null) return;
+
+    try {
+      await _supabase.from('expenses').delete().eq('id', id);
+    } catch (e) {
+      // Delete failed — restore it and let the user know
+      if (mounted) {
+        setState(() {
+          final insertAt = pending.key.clamp(0, _expenses.length);
+          _expenses.insert(insertAt, pending.value);
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to delete "${pending.value.title}": $e')),
+        );
+      }
     }
   }
 
@@ -355,12 +433,22 @@ class _HomePageState extends State<HomePage> {
                     style: const TextStyle(fontWeight: FontWeight.w500),
                   ),
                   subtitle: Text(e.category),
-                  trailing: Text(
-                    '₹${e.amount.toStringAsFixed(2)}',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 15,
-                    ),
+                  trailing:Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children:[
+                      Text(
+                        '₹${e.amount.toStringAsFixed(2)}',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                        ),
+                      ),
+                      SizedBox(width:8),
+                      GestureDetector(
+                        onTap: () => _deleteExpense(e),
+                        child: const Icon(Icons.delete_outline, color: Colors.red, size: 18),
+                      ),
+                    ]
                   ),
                 ),
               )),
